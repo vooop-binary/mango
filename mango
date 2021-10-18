@@ -1,21 +1,33 @@
 #!/usr/bin/env ruby
 
-require 'async'
-require 'nokogiri'
-require 'rmagick'
-require 'colorize'
-require 'net/http'
-require 'async/http/internet'
-require 'cgi'
+require "os"
+require "cgi"
+require "async"
+require "tmpdir"
+require "rmagick"
+require "nokogiri"
+require "colorize"
+require "net/http"
+require "async/http/internet"
 
 # site to download the manga from
 # TODO: support multiple sites
-SITE = 'http://w12.mangafreak.net'
+SITE = "http://w12.mangafreak.net"
+
+# build directory
+BUILD_DIR = "#{Dir.tmpdir()}/build"
+
+# @brief Print's the usage of the CLI tool
+def print_usage
+  abort "USAGE:\n".green +
+        "\tmango <name> <start>:<end>\n".green +
+        "\tmango <name> <chapter>".green
+end
 
 # @brief Search for manga
 # @param - name name of the manga
 def manga_search name
-  # encode the name (' ' to '%20')
+  # encode the name (" " to "%20")
   name = CGI::escape name
   # url to scrape
   url = "#{SITE}/Search/#{name}"
@@ -23,10 +35,10 @@ def manga_search name
   res = Net::HTTP.get_response(uri)
   doc = Nokogiri::HTML(res.body)
 
-  options = doc.css('.manga_search_item').map do |i|
+  options = doc.css(".manga_search_item").map do |i|
     {
-      title: i.css('span')[1].css('h3').css('a').text,
-      url: "#{SITE}#{i.css('span')[1].css('h3').css('a').attr('href')}"
+      title: i.css("span")[1].css("h3").css("a").text,
+      url: "#{SITE}#{i.css("span")[1].css("h3").css("a").attr("href")}"
     }
   end
 
@@ -36,13 +48,17 @@ def manga_search name
   end
 
   print "\nEnter number".green + " [1..#{options.length}]: ".yellow
-  option = STDIN.gets
+  option = STDIN.gets.chomp
 
   # Check if option given is correct
   begin
     option = Integer(option).clamp(1, options.length)
   rescue
-    abort 'ERROR: Input must be a number.'.red
+    if option == ''
+      option = 1
+    else
+      abort "ERROR: Input must be a number.".red
+    end
   end
 
   options[option-1]
@@ -54,8 +70,8 @@ end
 # @paramm chapter_end - download till chapter
 def manga_compile_to_pdf manga, chapter_start, chapter_end
   # path to the final images
-  title = manga[:url].split('/')[-1]
-  path = "build/#{title}"
+  title = manga[:url].split("/")[-1]
+  path = "#{BUILD_DIR}/#{title}"
 
   # make the path; if it exists do nothing (-p)
   `mkdir -p #{path}`
@@ -76,29 +92,43 @@ def manga_compile_to_pdf manga, chapter_start, chapter_end
       unzip images_#{chapter}.zip &&
       rm -rf images_#{chapter}.zip`
     end
+
     # TODO: remove exa as an unnecessary dependency
-    image_list = `exa -tU #{path}/*.jpg`.split(' ')
+    image_list = `exa -tU #{path}/*.jpg`.split(" ")
     img = Magick::ImageList.new(*image_list)
   
-    `mkdir -p out`
-    img.write(
-      "out/#{title.gsub('_', '-')}-#{chapter_start}-#{chapter_end}.pdf"
-    )
-    `rm -rf build`
-    print 'Open manga? [Y/n] '.green
+    # set the file path conditionaly
+    file_path = if chapter_start == chapter_end
+                  "#{title.gsub("_", "-")}-#{chapter_start}.pdf"
+                else
+                  "#{title.gsub("_", "-")}-#{chapter_start}-#{chapter_end}.pdf"
+                end
+
+    img.write(file_path)
+
+    `rm -rf #{BUILD_DIR}`
+    print "Open manga? [Y/n] ".green
     input = STDIN.gets.chomp.downcase 
-    if input == 'y' || input == ''
-      `open out/#{title.gsub('_', '-')}-#{chapter_start}-#{chapter_end}.pdf`
+    if input == "y" || input == ""
+      # open file regard less of the platform 
+      `#{OS.open_file_command} #{file_path}`
     end
   end
 end
 
-`rm -rf build` if Dir.exists? 'build'
+`rm -rf #{BUILD_DIR}` if Dir.exists? BUILD_DIR
 
-if ARGV.length != 2
-  abort "USAGE:\n\tmango name chapter_start:chapter_end\n\texample: mango \"Black Clover\" 290:292".green
+print_usage() unless ARGV.length == 2
+
+chapter_start, chapter_end = ARGV[1].split(":").map(&:to_i)
+
+# Check if chapter_end exists
+if chapter_end
+  print_usage() unless chapter_end >= chapter_start
+else
+  chapter_end = chapter_start
 end
 
 options = manga_search ARGV[0]
-chapter_start, chapter_end = ARGV[1].split(':').map(&:to_i)
+
 manga_compile_to_pdf(options, chapter_start, chapter_end)
