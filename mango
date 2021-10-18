@@ -1,0 +1,104 @@
+#!/usr/bin/env ruby
+
+require 'async'
+require 'nokogiri'
+require 'rmagick'
+require 'colorize'
+require 'net/http'
+require 'async/http/internet'
+require 'cgi'
+
+# site to download the manga from
+# TODO: support multiple sites
+SITE = 'http://w12.mangafreak.net'
+
+# @brief Search for manga
+# @param - name name of the manga
+def manga_search name
+  # encode the name (' ' to '%20')
+  name = CGI::escape name
+  # url to scrape
+  url = "#{SITE}/Search/#{name}"
+  uri = URI.parse(url)
+  res = Net::HTTP.get_response(uri)
+  doc = Nokogiri::HTML(res.body)
+
+  options = doc.css('.manga_search_item').map do |i|
+    {
+      title: i.css('span')[1].css('h3').css('a').text,
+      url: "#{SITE}#{i.css('span')[1].css('h3').css('a').attr('href')}"
+    }
+  end
+
+  # Display the options
+  (0..options.length - 1).each do |i|
+    puts "[#{i + 1}]".yellow + " #{options[i][:title]}".green
+  end
+
+  print "\nEnter number".green + " [1..#{options.length}]: ".yellow
+  option = STDIN.gets
+
+  # Check if option given is correct
+  begin
+    option = Integer(option).clamp(1, options.length)
+  rescue
+    abort 'ERROR: Input must be a number.'.red
+  end
+
+  options[option-1]
+end
+
+# @brief Download the manga and compile it to a pdf
+# @param manga - manga containing the title and url
+# @param chapter_start - download from chapter 
+# @paramm chapter_end - download till chapter
+def manga_compile_to_pdf manga, chapter_start, chapter_end
+  # path to the final images
+  title = manga[:url].split('/')[-1]
+  path = "build/#{title}"
+
+  # make the path; if it exists do nothing (-p)
+  `mkdir -p #{path}`
+
+  Async.run do
+    chapter_start.upto(chapter_end) do |chapter|
+      # TODO: support multiple sites
+      chapter_url = "http://images.mangafreak.net:8080/downloads/#{title}_#{chapter}"
+      net = Async::HTTP::Internet.new
+
+      # Download the zip file containing all the pages
+      res = net.get chapter_url
+      res.save "#{path}/images_#{chapter}.zip"
+
+      # Unzip using the shell
+      # TODO: unzip the files using ruby
+      `cd #{path} &&
+      unzip images_#{chapter}.zip &&
+      rm -rf images_#{chapter}.zip`
+    end
+    # TODO: remove exa as an unnecessary dependency
+    image_list = `exa -tU #{path}/*.jpg`.split(' ')
+    img = Magick::ImageList.new(*image_list)
+  
+    `mkdir -p out`
+    img.write(
+      "out/#{title.gsub('_', '-')}-#{chapter_start}-#{chapter_end}.pdf"
+    )
+    `rm -rf build`
+    print 'Open manga? [Y/n] '.green
+    input = STDIN.gets.chomp.downcase 
+    if input == 'y' || input == ''
+      `open out/#{title.gsub('_', '-')}-#{chapter_start}-#{chapter_end}.pdf`
+    end
+  end
+end
+
+`rm -rf build` if Dir.exists? 'build'
+
+if ARGV.length != 2
+  abort "USAGE:\n\tmango name chapter_start:chapter_end\n\texample: mango \"Black Clover\" 290:292".green
+end
+
+options = manga_search ARGV[0]
+chapter_start, chapter_end = ARGV[1].split(':').map(&:to_i)
+manga_compile_to_pdf(options, chapter_start, chapter_end)
